@@ -12,10 +12,24 @@ It works for any competition, because everything specific to the match (team str
 
 ## Setup
 
-Copy `scoreline_predictor.py` into your project folder, or next to your notebook. That is all.
+You need Python 3.9 or newer. No other packages are required.
 
-- Python 3.9 or newer
-- No other packages needed
+**Option 1: install with pip.** This needs access to the repository, which is private.
+
+```
+pip install git+https://github.com/maxspeicher/expected-scoreline-predictor@v0.1.0
+```
+
+The part after `@` is the version. The available versions are listed under [Releases](https://github.com/maxspeicher/expected-scoreline-predictor/releases).
+
+**Option 2: copy the file.** Copy `scoreline_predictor.py` into your project folder, or next to your notebook.
+
+To see which version you have:
+
+```python
+import scoreline_predictor
+scoreline_predictor.__version__   # '0.1.0'
+```
 
 ## Quick start
 
