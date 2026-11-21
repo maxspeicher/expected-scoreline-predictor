@@ -426,9 +426,10 @@ class ParameterRecoveryTest(unittest.TestCase):
 
     def test_from_1x2_and_half_line_totals(self):
         for lam_h, lam_a in self.MATCHES:
-            with self.subTest(lam_home=lam_h, lam_away=lam_a):
-                odds = fair_odds(lam_h, lam_a, sp.DEFAULT_RHO, total_line=2.5)
-                self.assert_recovers(predict_scorelines(**odds), lam_h, lam_a, sp.DEFAULT_RHO)
+            for rho in (-0.15, -0.05, 0.0, 0.08):
+                with self.subTest(lam_home=lam_h, lam_away=lam_a, rho=rho):
+                    odds = fair_odds(lam_h, lam_a, rho, total_line=2.5)
+                    self.assert_recovers(predict_scorelines(**odds), lam_h, lam_a, rho)
 
     def test_from_1x2_alone(self):
         for lam_h, lam_a in self.MATCHES:
@@ -439,18 +440,28 @@ class ParameterRecoveryTest(unittest.TestCase):
     def test_from_whole_and_quarter_total_lines(self):
         for line in (2.0, 2.25, 2.75, 3.0, 3.25):
             with self.subTest(total_line=line):
-                odds = fair_odds(1.76, 1.05, sp.DEFAULT_RHO, total_line=line)
-                self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, sp.DEFAULT_RHO)
+                odds = fair_odds(1.76, 1.05, -0.1, total_line=line)
+                self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, -0.1)
 
     def test_from_asian_handicap_lines(self):
         for line in (-1.5, -1.0, -0.75, -0.25, 0.0, 0.25, 1.0):
             with self.subTest(ah_line=line):
-                odds = fair_odds(1.76, 1.05, sp.DEFAULT_RHO, total_line=2.5, ah_line=line)
-                self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, sp.DEFAULT_RHO)
+                odds = fair_odds(1.76, 1.05, -0.1, total_line=2.5, ah_line=line)
+                self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, -0.1)
+
+    def test_from_1x2_and_btts_alone(self):
+        odds = fair_odds(1.76, 1.05, -0.1, btts=True)
+        self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, -0.1)
+
+    def test_from_1x2_and_a_handicap_beyond_half_a_goal(self):
+        for line in (-1.5, -1.0, -0.75, 0.75, 1.0):
+            with self.subTest(ah_line=line):
+                odds = fair_odds(1.76, 1.05, -0.1, ah_line=line)
+                self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, -0.1)
 
     def test_from_all_markets_together(self):
-        odds = fair_odds(1.76, 1.05, sp.DEFAULT_RHO, total_line=2.75, ah_line=-0.75, btts=True)
-        self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, sp.DEFAULT_RHO)
+        odds = fair_odds(1.76, 1.05, -0.1, total_line=2.75, ah_line=-0.75, btts=True)
+        self.assert_recovers(predict_scorelines(**odds), 1.76, 1.05, -0.1)
 
     def test_with_a_fixed_rho(self):
         for rho in (-0.2, -0.12, 0.0, 0.05):
@@ -458,23 +469,62 @@ class ParameterRecoveryTest(unittest.TestCase):
                 odds = fair_odds(1.76, 1.05, rho, total_line=2.5)
                 self.assert_recovers(predict_scorelines(**odds, rho=rho), 1.76, 1.05, rho)
 
-    def test_fitted_rho_moves_towards_the_true_value(self):
-        strong = predict_scorelines(**fair_odds(1.5, 1.2, -0.18, total_line=2.5))
-        weak = predict_scorelines(**fair_odds(1.5, 1.2, 0.02, total_line=2.5))
-        self.assertLess(strong.rho, sp.DEFAULT_RHO)
-        self.assertGreater(weak.rho, sp.DEFAULT_RHO)
-        self.assertLess(strong.rho, weak.rho)
-
     def test_recovers_the_full_score_matrix(self):
-        truth = sp._score_matrix(1.76, 1.05, sp.DEFAULT_RHO)
-        p = predict_scorelines(**fair_odds(1.76, 1.05, sp.DEFAULT_RHO, total_line=2.5))
+        truth = sp._score_matrix(1.76, 1.05, -0.1)
+        p = predict_scorelines(**fair_odds(1.76, 1.05, -0.1, total_line=2.5))
         for h, a, prob in cells(truth):
             self.assertAlmostEqual(p.score_matrix[h][a], prob, delta=0.001)
 
 
 class RhoTest(unittest.TestCase):
+    def test_default_is_independence(self):
+        self.assertEqual(sp.DEFAULT_RHO, 0.0)
+
     def test_default_is_used_when_only_1x2_odds_are_given(self):
         self.assertEqual(predict_scorelines(**ODDS_1X2).rho, sp.DEFAULT_RHO)
+
+    def test_default_is_used_when_the_handicap_is_at_most_half_a_goal(self):
+        # Such a handicap settles on the match outcome alone, so it cannot identify rho.
+        for line in (-0.5, -0.25, 0.0, 0.25, 0.5):
+            with self.subTest(ah_line=line):
+                odds = fair_odds(1.76, 1.05, 0.0, ah_line=line)
+                self.assertEqual(predict_scorelines(**odds).rho, sp.DEFAULT_RHO)
+
+    def test_handicap_of_at_most_half_a_goal_follows_from_the_1x2_probabilities(self):
+        for rho in (-0.15, 0.0, 0.1):
+            m = sp._score_matrix(1.76, 1.05, rho)
+            home, draw, away = outcome_probs(m)
+            with self.subTest(rho=rho):
+                self.assertAlmostEqual(sp._line_prob(m, -0.5, True), home, places=12)
+                self.assertAlmostEqual(sp._line_prob(m, 0.0, True), home / (home + away), places=12)
+                self.assertAlmostEqual(sp._line_prob(m, 0.5, True), home + draw, places=12)
+                self.assertAlmostEqual(sp._line_prob(m, -0.25, True), home / (home + away + draw / 2), places=12)
+
+    def test_admissible_range_is_the_one_given_by_dixon_and_coles(self):
+        low, high = sp._rho_range(2.0, 0.8)
+        self.assertEqual(low, max(-1 / 2.0, -1 / 0.8))
+        self.assertEqual(high, min(1 / (2.0 * 0.8), 1.0))
+        self.assertEqual(sp._rho_range(0.5, 0.5), (-2.0, 1.0))
+
+    def test_probabilities_stay_valid_at_the_edges_of_the_admissible_range(self):
+        for lam_h, lam_a in ((2.0, 0.8), (0.5, 0.5), (3.0, 2.5)):
+            for rho in sp._rho_range(lam_h, lam_a):
+                with self.subTest(lam_home=lam_h, lam_away=lam_a, rho=rho):
+                    m = sp._score_matrix(lam_h, lam_a, rho)
+                    self.assertTrue(all(p >= 0.0 for _, _, p in cells(m)))
+                    self.assertAlmostEqual(sum(h * p for h, _, p in cells(m)), lam_h, places=4)
+
+    def test_does_not_change_totals_of_two_or_more_goals(self):
+        # A property of the Dixon-Coles correction: it only moves probability among
+        # 0-0, 1-0, 0-1 and 1-1, and leaves the probability of under 2.5 goals untouched.
+        base = sp._score_matrix(1.76, 1.05, 0.0)
+        adj = sp._score_matrix(1.76, 1.05, -0.15)
+        for line in (2.5, 3.5, 4.5):
+            with self.subTest(line=line):
+                self.assertAlmostEqual(
+                    sp._line_prob(adj, line, False), sp._line_prob(base, line, False), places=9
+                )
+        self.assertNotAlmostEqual(sp._line_prob(adj, 0.5, False), sp._line_prob(base, 0.5, False), places=4)
 
     def test_is_estimated_when_another_market_is_given(self):
         for extra in (ODDS_TOTALS, dict(btts_yes=1.75, btts_no=2.05), dict(ah_home=2.08, ah_away=1.84, ah_line=-0.75)):
@@ -491,8 +541,10 @@ class RhoTest(unittest.TestCase):
         for draw in (2.2, 9.0):
             with self.subTest(draw=draw):
                 p = predict_scorelines(home=2.5, draw=draw, away=2.9, over=1.9, under=1.9)
-                self.assertGreaterEqual(p.rho, -0.25)
-                self.assertLessEqual(p.rho, 0.25)
+                low, high = sp._rho_range(p.lambda_home, p.lambda_away)
+                self.assertGreaterEqual(p.rho, low)
+                self.assertLessEqual(p.rho, high)
+                self.assertTrue(all(prob >= 0.0 for _, _, prob in cells(p.score_matrix)))
 
     def test_more_negative_rho_makes_low_scoring_draws_more_likely(self):
         low = predict_scorelines(**ODDS_1X2, rho=-0.2).score_matrix
@@ -502,8 +554,9 @@ class RhoTest(unittest.TestCase):
 
 class FitErrorTest(unittest.TestCase):
     def test_is_small_for_consistent_odds(self):
-        self.assertLess(predict_scorelines(**ODDS_FULL).fit_error, 0.005)
-        self.assertLess(predict_scorelines(**ODDS_1X2).fit_error, 1e-5)
+        # As many prices as parameters: the model reproduces the odds exactly.
+        self.assertLess(predict_scorelines(**ODDS_FULL).fit_error, 1e-6)
+        self.assertLess(predict_scorelines(**ODDS_1X2).fit_error, 1e-6)
 
     def test_is_never_negative(self):
         self.assertGreaterEqual(predict_scorelines(**ODDS_FULL).fit_error, 0.0)
@@ -692,8 +745,13 @@ class InputValidationTest(unittest.TestCase):
             with self.subTest(top_n=n):
                 self.assert_rejected(top_n=n)
 
-    def test_rejects_rho_outside_its_bounds(self):
-        for rho in (-0.3, 0.3, 1.0, float("nan")):
+    def test_rejects_rho_outside_its_admissible_range(self):
+        for rho in (-5.0, -1.0, 0.9, 2.0):
+            with self.subTest(rho=rho):
+                self.assert_rejected(rho=rho)
+
+    def test_rejects_non_finite_rho(self):
+        for rho in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(rho=rho):
                 self.assert_rejected(rho=rho)
 

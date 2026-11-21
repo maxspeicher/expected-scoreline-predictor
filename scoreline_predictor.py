@@ -21,13 +21,34 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["predict_scorelines", "ScorelinePrediction", "Scoreline", "remove_margin"]
 
-DEFAULT_RHO = -0.08  # typical Dixon-Coles low-score correction in modern soccer
-_RHO_BOUNDS = (-0.25, 0.25)
-_RHO_PRIOR_WEIGHT = 0.05  # pulls a fitted rho gently towards DEFAULT_RHO
-_MAX_GOALS = 15  # per team; the grid is renormalised after truncation
+# --- Statistical assumption -------------------------------------------------
+# Dependence between the two teams' goals when the odds cannot identify it
+# (1X2 odds only). Zero means independent Poisson goals (Maher, 1982). Published
+# estimates of the Dixon-Coles parameter differ in sign between competitions and
+# eras, so no single non-zero value is supported; see "References" in the README.
+DEFAULT_RHO = 0.0
+
+# --- Numerical settings (precision only; they are not model assumptions) -----
+# Largest number of goals per team on the probability grid. For an expected
+# number of goals of 5, far above any real match, the probability of more than
+# 15 goals is below 1e-4; the grid is renormalised after truncation.
+_MAX_GOALS = 15
+# Search range for a team's expected goals. Guard rails for the optimiser that
+# no real match comes near.
+_MIN_RATE, _MAX_RATE = 0.01, 10.0
+# Starting point of the search: the average number of goals per match reported
+# by Shelopugin and Sirotkin (2026), split evenly between the teams. The fitted
+# values do not depend on it.
+_START_TOTAL_GOALS = 2.69
+# Nelder-Mead coefficients as in the original method (Nelder and Mead, 1965).
+_NM_REFLECT, _NM_EXPAND, _NM_CONTRACT, _NM_SHRINK = 1.0, 2.0, 0.5, 0.5
+_NM_INITIAL_STEPS = (0.2, 0.05, 0.01)  # one run per step size; restarts guard against stalling
+_NM_TOLERANCE = 1e-16  # stop when the squared fit error varies less than this across the simplex
+_NM_MAX_ITERATIONS = 2000
+_BISECTION_STEPS = 100  # halvings when solving for the margin exponent; exhausts float precision
 
 
 @dataclass(frozen=True)
@@ -79,7 +100,7 @@ def remove_margin(odds: Sequence[float]) -> List[float]:
     lo, hi = 1.0, 2.0
     while sum(r**hi for r in raw) > 1.0:
         hi *= 2.0
-    for _ in range(100):
+    for _ in range(_BISECTION_STEPS):
         mid = (lo + hi) / 2.0
         if sum(r**mid for r in raw) > 1.0:
             lo = mid
@@ -150,16 +171,25 @@ def _line_prob(m: List[List[float]], line: float, handicap: bool) -> float:
     return win / (win + lose)
 
 
-def _nelder_mead(f: Callable[[List[float]], float], x0: List[float], step: float = 0.2,
-                 tol: float = 1e-16, max_iter: int = 2000) -> List[float]:
+def _rho_range(lam_home: float, lam_away: float) -> Tuple[float, float]:
+    """Values of rho for which every Dixon-Coles probability is non-negative.
+
+    The constraint given by Dixon and Coles (1997):
+    max(-1/lam_home, -1/lam_away) <= rho <= min(1/(lam_home*lam_away), 1).
+    """
+    return max(-1.0 / lam_home, -1.0 / lam_away), min(1.0 / (lam_home * lam_away), 1.0)
+
+
+def _nelder_mead(f: Callable[[List[float]], float], x0: List[float], step: float) -> List[float]:
+    """Minimise f with the downhill simplex method of Nelder and Mead (1965)."""
     n = len(x0)
     simplex = [list(x0)] + [[x + (step if i == j else 0.0) for j, x in enumerate(x0)] for i in range(n)]
     values = [f(x) for x in simplex]
-    for _ in range(max_iter):
+    for _ in range(_NM_MAX_ITERATIONS):
         order = sorted(range(n + 1), key=values.__getitem__)
         simplex = [simplex[i] for i in order]
         values = [values[i] for i in order]
-        if values[-1] - values[0] < tol:
+        if values[-1] - values[0] < _NM_TOLERANCE:
             break
         centroid = [sum(x[j] for x in simplex[:-1]) / n for j in range(n)]
         worst = simplex[-1]
@@ -167,22 +197,22 @@ def _nelder_mead(f: Callable[[List[float]], float], x0: List[float], step: float
         def along(t: float) -> List[float]:
             return [c + t * (c - w) for c, w in zip(centroid, worst)]
 
-        xr = along(1.0)
+        xr = along(_NM_REFLECT)
         fr = f(xr)
         if fr < values[0]:
-            xe = along(2.0)
+            xe = along(_NM_EXPAND)
             fe = f(xe)
             simplex[-1], values[-1] = (xe, fe) if fe < fr else (xr, fr)
         elif fr < values[-2]:
             simplex[-1], values[-1] = xr, fr
         else:
-            xc = along(0.5) if fr < values[-1] else along(-0.5)
+            xc = along(_NM_CONTRACT) if fr < values[-1] else along(-_NM_CONTRACT)
             fc = f(xc)
             if fc < min(fr, values[-1]):
                 simplex[-1], values[-1] = xc, fc
             else:  # shrink towards the best point
                 best = simplex[0]
-                simplex = [best] + [[b + 0.5 * (x - b) for b, x in zip(best, pt)] for pt in simplex[1:]]
+                simplex = [best] + [[b + _NM_SHRINK * (x - b) for b, x in zip(best, pt)] for pt in simplex[1:]]
                 values = [values[0]] + [f(x) for x in simplex[1:]]
     return simplex[min(range(n + 1), key=values.__getitem__)]
 
@@ -218,9 +248,10 @@ def predict_scorelines(
         goal. Any multiple of 0.25 works.
     btts_yes, btts_no : decimal odds for both teams to score (optional).
     top_n : number of most likely scorelines to return.
-    rho : Dixon-Coles low-score correction. ``None`` (default) estimates it
-        from the odds when an over/under, Asian handicap or BTTS market
-        is given, and otherwise uses ``DEFAULT_RHO``. Pass a number to fix it.
+    rho : Dixon-Coles dependence parameter. ``None`` (default) calibrates it
+        to the odds when they identify it, i.e. when an over/under market, a
+        BTTS market or an Asian handicap beyond +-0.5 is given. Otherwise it
+        is ``DEFAULT_RHO`` (0, independent goals). Pass a number to fix it.
 
     All odds are for the result after 90 minutes plus stoppage time.
     """
@@ -238,21 +269,30 @@ def predict_scorelines(
         _check_line("ah_line", ah_line)
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
-    if rho is not None and not _RHO_BOUNDS[0] <= rho <= _RHO_BOUNDS[1]:
-        raise ValueError(f"rho must be within {_RHO_BOUNDS}, got {rho}")
+    if rho is not None and not math.isfinite(rho):
+        raise ValueError(f"rho must be a finite number, got {rho}")
 
     target_1x2 = remove_margin([home, draw, away])
     target_over = remove_margin([over, under])[0] if over is not None else None
     target_ah = remove_margin([ah_home, ah_away])[0] if ah_home is not None else None
     target_btts = remove_margin([btts_yes, btts_no])[0] if btts_yes is not None else None
-    fit_rho = rho is None and any(t is not None for t in (target_over, target_ah, target_btts))
+    # The 1X2 odds fix two quantities. A third market is needed to identify rho.
+    # An Asian handicap of at most half a goal adds nothing: it settles on the
+    # match outcome alone, so its fair price follows from the 1X2 probabilities.
+    identifies_rho = (
+        target_over is not None or target_btts is not None or (ah_line is not None and abs(ah_line) > 0.5)
+    )
+    fit_rho = rho is None and identifies_rho
     fixed_rho = DEFAULT_RHO if rho is None else rho
+    log_min, log_max = math.log(_MIN_RATE), math.log(_MAX_RATE)
 
     def unpack(x: List[float]) -> Tuple[float, float, float]:
-        lam_h = math.exp(min(max(x[0], -5.0), 2.3))  # lambda between ~0.007 and ~10
-        lam_a = math.exp(min(max(x[1], -5.0), 2.3))
-        r = min(max(x[2], _RHO_BOUNDS[0]), _RHO_BOUNDS[1]) if fit_rho else fixed_rho
-        return lam_h, lam_a, r
+        lam_h = math.exp(min(max(x[0], log_min), log_max))
+        lam_a = math.exp(min(max(x[1], log_min), log_max))
+        if not fit_rho:
+            return lam_h, lam_a, fixed_rho
+        low, high = _rho_range(lam_h, lam_a)
+        return lam_h, lam_a, min(max(x[2], low), high)
 
     def gaps(lam_h: float, lam_a: float, r: float) -> List[float]:
         m = _score_matrix(lam_h, lam_a, r)
@@ -268,15 +308,18 @@ def predict_scorelines(
 
     def loss(x: List[float]) -> float:
         lam_h, lam_a, r = unpack(x)
-        total = sum(g * g for g in gaps(lam_h, lam_a, r))
-        if fit_rho:
-            total += (_RHO_PRIOR_WEIGHT * (r - DEFAULT_RHO)) ** 2
-        return total
+        return sum(g * g for g in gaps(lam_h, lam_a, r))
 
-    x = [math.log(1.5), math.log(1.1)] + ([DEFAULT_RHO] if fit_rho else [])
-    for step in (0.2, 0.05, 0.01):  # restarts guard against a stalled simplex
-        x = _nelder_mead(loss, x, step=step)
-    lam_h, lam_a, r = unpack(x + ([] if fit_rho else [fixed_rho]))
+    x = [math.log(_START_TOTAL_GOALS / 2)] * 2 + ([DEFAULT_RHO] if fit_rho else [])
+    for step in _NM_INITIAL_STEPS:
+        x = _nelder_mead(loss, x, step)
+    lam_h, lam_a, r = unpack(x)
+    low, high = _rho_range(lam_h, lam_a)
+    if not low <= r <= high:
+        raise ValueError(
+            f"rho={r} is not admissible for the fitted goal rates {lam_h:.2f} and {lam_a:.2f}; "
+            f"it must lie between {low:.3f} and {high:.3f}"
+        )
 
     matrix = _score_matrix(lam_h, lam_a, r)
     p_home, p_draw, p_away, _ = _market_probs(matrix)

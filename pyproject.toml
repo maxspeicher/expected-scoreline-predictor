@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "expected-scoreline-predictor"
-description = "Turns the closing odds of a single soccer match into scoreline probabilities."
+description = "Turns the closing odds of a single soccer match into scoreline probabilities, including knockout matches."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -17,7 +17,7 @@ dynamic = ["version"]
 Repository = "https://github.com/maxspeicher/expected-scoreline-predictor"
 
 [tool.setuptools]
-py-modules = ["scoreline_predictor"]
+py-modules = ["scoreline_predictor", "knockout_predictor"]
 
 [tool.setuptools.dynamic]
 version = { attr = "scoreline_predictor.__version__" }
