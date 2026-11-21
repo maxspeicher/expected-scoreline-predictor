@@ -14,7 +14,7 @@ It works for any competition, because everything specific to the match (team str
 
 You need Python 3.9 or newer. No other packages are required.
 
-**Option 1: install with pip.** This needs access to the repository, which is private.
+**Option 1: install with pip.**
 
 ```
 pip install git+https://github.com/maxspeicher/expected-scoreline-predictor@v0.1.0
