@@ -1,4 +1,4 @@
-# expected-scoreline-predictor
+# Predicting Soccer Scorelines from Betting Odds
 
 Turns the closing odds of a single soccer match into scoreline probabilities.
 
