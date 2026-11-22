@@ -21,15 +21,18 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["predict_scorelines", "ScorelinePrediction", "Scoreline", "remove_margin"]
 
 # --- Statistical assumption -------------------------------------------------
 # Dependence between the two teams' goals when the odds cannot identify it
-# (1X2 odds only). Zero means independent Poisson goals (Maher, 1982). Published
-# estimates of the Dixon-Coles parameter differ in sign between competitions and
-# eras, so no single non-zero value is supported; see "References" in the README.
-DEFAULT_RHO = 0.0
+# (1X2 odds only). It is the median of the values implied by Pinnacle closing
+# odds for 1X2 and over/under 2.5 in the five big European leagues, seasons
+# 2021/22 and 2022/23 (3,633 matches). In the three following seasons it
+# predicted goals without bias, where independent goals (rho = 0) underestimated
+# them by 0.3 per match. validation/backtest.py reproduces the value; see
+# "Validation" in the README.
+DEFAULT_RHO = -0.086
 
 # --- Numerical settings (precision only; they are not model assumptions) -----
 # Largest number of goals per team on the probability grid. For an expected
@@ -180,6 +183,13 @@ def _rho_range(lam_home: float, lam_away: float) -> Tuple[float, float]:
     return max(-1.0 / lam_home, -1.0 / lam_away), min(1.0 / (lam_home * lam_away), 1.0)
 
 
+def _sigmoid(z: float) -> float:
+    if z >= 0:
+        return 1.0 / (1.0 + math.exp(-z))
+    e = math.exp(z)
+    return e / (1.0 + e)
+
+
 def _nelder_mead(f: Callable[[List[float]], float], x0: List[float], step: float) -> List[float]:
     """Minimise f with the downhill simplex method of Nelder and Mead (1965)."""
     n = len(x0)
@@ -251,7 +261,8 @@ def predict_scorelines(
     rho : Dixon-Coles dependence parameter. ``None`` (default) calibrates it
         to the odds when they identify it, i.e. when an over/under market, a
         BTTS market or an Asian handicap beyond +-0.5 is given. Otherwise it
-        is ``DEFAULT_RHO`` (0, independent goals). Pass a number to fix it.
+        is ``DEFAULT_RHO`` (-0.086, the typical value implied by market odds).
+        Pass a number to fix it; ``rho=0`` gives independent goals.
 
     All odds are for the result after 90 minutes plus stoppage time.
     """
@@ -291,8 +302,11 @@ def predict_scorelines(
         lam_a = math.exp(min(max(x[1], log_min), log_max))
         if not fit_rho:
             return lam_h, lam_a, fixed_rho
+        # rho is searched on an unbounded scale and mapped smoothly into its admissible
+        # range. Cutting it off at the limits instead would leave the search with a flat
+        # region in which it can get stuck.
         low, high = _rho_range(lam_h, lam_a)
-        return lam_h, lam_a, min(max(x[2], low), high)
+        return lam_h, lam_a, low + (high - low) * _sigmoid(x[2])
 
     def gaps(lam_h: float, lam_a: float, r: float) -> List[float]:
         m = _score_matrix(lam_h, lam_a, r)
@@ -310,7 +324,12 @@ def predict_scorelines(
         lam_h, lam_a, r = unpack(x)
         return sum(g * g for g in gaps(lam_h, lam_a, r))
 
-    x = [math.log(_START_TOTAL_GOALS / 2)] * 2 + ([DEFAULT_RHO] if fit_rho else [])
+    start_rate = _START_TOTAL_GOALS / 2
+    x = [math.log(start_rate)] * 2
+    if fit_rho:
+        low, high = _rho_range(start_rate, start_rate)
+        share = (DEFAULT_RHO - low) / (high - low)
+        x.append(math.log(share / (1.0 - share)))  # the search starts at rho = DEFAULT_RHO
     for step in _NM_INITIAL_STEPS:
         x = _nelder_mead(loss, x, step)
     lam_h, lam_a, r = unpack(x)

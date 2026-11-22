@@ -10,6 +10,7 @@ predictor has to recover those parameters from the odds alone.
 import dataclasses
 import math
 import unittest
+from unittest import mock
 
 import scoreline_predictor as sp
 from scoreline_predictor import Scoreline, ScorelinePrediction, predict_scorelines, remove_margin
@@ -477,8 +478,15 @@ class ParameterRecoveryTest(unittest.TestCase):
 
 
 class RhoTest(unittest.TestCase):
-    def test_default_is_independence(self):
-        self.assertEqual(sp.DEFAULT_RHO, 0.0)
+    def test_default_is_the_value_implied_by_market_odds(self):
+        # Median over the first two test seasons in validation/backtest.py.
+        self.assertEqual(sp.DEFAULT_RHO, -0.086)
+
+    def test_default_expects_more_goals_than_independent_goals(self):
+        default = predict_scorelines(**ODDS_1X2)
+        independent = predict_scorelines(**ODDS_1X2, rho=0.0)
+        self.assertGreater(sum(default.expected_goals), sum(independent.expected_goals) + 0.2)
+        self.assertAlmostEqual(default.draw, independent.draw, places=6)  # both reproduce the 1X2 odds
 
     def test_default_is_used_when_only_1x2_odds_are_given(self):
         self.assertEqual(predict_scorelines(**ODDS_1X2).rho, sp.DEFAULT_RHO)
@@ -550,6 +558,47 @@ class RhoTest(unittest.TestCase):
         low = predict_scorelines(**ODDS_1X2, rho=-0.2).score_matrix
         high = predict_scorelines(**ODDS_1X2, rho=0.0).score_matrix
         self.assertGreater(low[0][0] / low[1][0], high[0][0] / high[1][0])
+
+
+class SearchRobustnessTest(unittest.TestCase):
+    """The fit must not depend on where the search starts.
+
+    These are closing odds of real, lopsided matches for which an earlier version
+    of the search got stuck at the edge of the admissible range of rho.
+    """
+
+    MATCHES = [
+        dict(home=1.63, draw=4.55, away=5.05, over=1.41, under=3.06, ah_home=2.02, ah_away=1.90, ah_line=-1.0),
+        dict(home=1.19, draw=8.46, away=14.37, over=1.20, under=4.40),
+        dict(home=19.69, draw=11.45, away=1.12, over=1.16, under=4.92, ah_home=1.83, ah_away=2.07, ah_line=2.75),
+        dict(home=1.13, draw=10.75, away=23.5, over=1.20, under=4.74, ah_home=2.06, ah_away=1.84, ah_line=-2.75),
+    ]
+
+    def test_fit_is_the_same_from_every_starting_value_of_rho(self):
+        for odds in self.MATCHES:
+            fits = []
+            for start in (-0.3, -0.086, 0.0, 0.2):
+                # With a second market given, DEFAULT_RHO only sets where the search starts.
+                with mock.patch.object(sp, "DEFAULT_RHO", start):
+                    fits.append(predict_scorelines(**odds))
+            with self.subTest(odds=odds):
+                for other in fits[1:]:
+                    self.assertAlmostEqual(other.rho, fits[0].rho, places=4)
+                    self.assertAlmostEqual(other.lambda_home, fits[0].lambda_home, places=4)
+                    self.assertAlmostEqual(other.fit_error, fits[0].fit_error, places=6)
+
+    def test_three_prices_are_reproduced_exactly_for_a_lopsided_match(self):
+        p = predict_scorelines(home=1.19, draw=8.46, away=14.37, over=1.20, under=4.40)
+        self.assertLess(p.fit_error, 1e-6)
+        self.assertAlmostEqual(p.rho, -0.0716, places=3)
+
+    def test_calibrated_rho_stays_strictly_inside_the_admissible_range(self):
+        for odds in self.MATCHES:
+            with self.subTest(odds=odds):
+                p = predict_scorelines(**odds)
+                low, high = sp._rho_range(p.lambda_home, p.lambda_away)
+                self.assertLess(low, p.rho)
+                self.assertLess(p.rho, high)
 
 
 class FitErrorTest(unittest.TestCase):

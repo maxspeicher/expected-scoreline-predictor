@@ -12,7 +12,7 @@ For knockout matches that must have a winner, it also predicts extra time and th
 
 It works for any competition, because everything specific to the match (team strength, home advantage, neutral venue) is already contained in the odds.
 
-The statistical reasoning behind every step, with references, is in [Methodology](#methodology).
+How well it predicts real results is measured in [Validation](#validation). The statistical reasoning behind every step, with references, is in [Methodology](#methodology).
 
 ## Setup
 
@@ -21,7 +21,7 @@ You need Python 3.9 or newer. No other packages are required.
 **Option 1: install with pip.**
 
 ```
-pip install git+https://github.com/maxspeicher/expected-scoreline-predictor@v0.2.0
+pip install git+https://github.com/maxspeicher/expected-scoreline-predictor@v0.3.0
 ```
 
 The part after `@` is the version. The available versions are listed under [Releases](https://github.com/maxspeicher/expected-scoreline-predictor/releases).
@@ -32,7 +32,7 @@ To see which version you have:
 
 ```python
 import scoreline_predictor
-scoreline_predictor.__version__   # '0.2.0'
+scoreline_predictor.__version__   # '0.3.0'
 ```
 
 ## Quick start
@@ -77,7 +77,7 @@ All odds are decimal odds (e.g. `1.85`), for the result after 90 minutes plus st
 
 Odds of one market always go together: `over` needs `under`, and the three Asian handicap arguments need each other.
 
-**Pass the over/under odds whenever you have them.** The 1X2 odds say who is likely to win, but they do not determine how many goals to expect. For the example above, the 1X2 odds alone are compatible with anything from about 2.1 to 2.8 expected goals, depending on an assumption the odds cannot settle (see [Calibration](#4-calibration-to-the-odds)). With the over/under odds, the model reproduces all prices exactly and no such assumption is needed.
+**Pass the over/under odds whenever you have them.** The 1X2 odds say who is likely to win, but they do not determine how many goals to expect. For the example above, the 1X2 odds alone are compatible with anything from about 2.1 to 3.0 expected goals, depending on an assumption the odds cannot settle (see [Calibration](#4-calibration-to-the-odds)). The module then uses a typical value taken from market odds, which is right on average but not for every match. With the over/under odds, the model reproduces all prices exactly and no such assumption is needed, and its predictions of real matches were measurably better; see [Validation](#validation).
 
 Use closing odds from a sharp source (e.g. Pinnacle, or a market average) if you can, and take all odds for a match from the same bookmaker and the same point in time.
 
@@ -108,9 +108,9 @@ This keeps the one-line prediction in agreement with the outcome probabilities. 
 | Odds you passed | What to expect |
 |---|---|
 | 1X2 only, or 1X2 plus one more market | The model has as many parameters as there are prices, so it reproduces them exactly: `fit_error` is practically 0 |
-| 1X2 plus two or more markets | There are more prices than parameters, so a small gap is normal. Up to about `0.003` is within the rounding of the odds: one step of 0.01 at odds of 2.00 moves the implied probability by 0.0025 |
+| 1X2 plus two or more markets | There are more prices than parameters, so a small gap is normal. With all three markets from Pinnacle, the median gap over 7,988 real matches was `0.002`, and 95% of matches were below `0.011` |
 
-A gap several times larger than that means the odds do not fit together. The usual causes are a handicap with the wrong sign, odds from different bookmakers or different points in time, or a typo. A gap can also appear with a single extra market when the prices are so extreme that no admissible model reproduces them.
+A gap well above `0.01` means the odds do not fit together. The usual causes are a handicap with the wrong sign, odds from different bookmakers or different points in time, or a typo. A gap can also appear with a single extra market when the prices are so extreme that no admissible model reproduces them.
 
 Invalid input (odds of 1 or less, half a market, a line that is not a multiple of 0.25) raises a `ValueError`.
 
@@ -194,15 +194,126 @@ One prediction takes less than a tenth of a second, so a full league season (a f
 
 ## Limits
 
-- **Not checked against real results.** The tests show that the model reproduces the odds. How well the resulting scorelines match actual results has not been measured on historical data. This is the most important open point; see [Limitations](#8-limitations).
+- **Validated on league matches only.** The 90-minute predictions were checked against 7,988 matches of five European leagues; see [Validation](#validation). Cup matches, international matches and the knockout module have not been checked.
 - **`predict_scorelines` covers 90 minutes only.** Use `predict_knockout` for matches that go to extra time and penalties.
 - **Extra time and shoot-outs rest on assumptions, not on odds.** The odds only describe the 90 minutes.
 - **Two-legged ties are not supported.** `predict_knockout` is for single matches. For a second leg, the 90-minute prediction is also less reliable: the aggregate score changes how teams play, which the model does not know about.
 - **Even the most likely scoreline is unlikely.** It rarely has more than a 10 to 15% chance. Read the predictions as probabilities, not as forecasts of the exact result.
 
+## Validation
+
+The model was tested on five seasons of the five big European leagues. In short:
+
+- **It is well calibrated.** Scorelines predicted with a given probability occurred about that often, and predicted goals matched actual goals to within 0.03 per team.
+- **It clearly beats the historical frequencies of scorelines**, in every league.
+- **The exact score remains hard to predict.** The expected scoreline was exactly right in 11.7% of matches, and the actual score was among the top five in 50.8%.
+- **Over/under odds matter a lot; Asian handicap odds add very little on top.**
+- **It exposed a biased default for 1X2 odds alone, which version 0.3.0 corrects.**
+
+### Design
+
+The design was fixed before any result was looked at.
+
+- **Matches.** All matches of the Premier League, Bundesliga, Serie A, La Liga and Ligue 1 from 2021/22 to 2025/26 for which Pinnacle closing odds exist for 1X2, over/under 2.5 and the Asian handicap: 7,988 of 8,908 matches. Most of the missing ones are from the second half of 2025/26.
+- **No fitting.** The model has no parameter that is estimated from results, so every match is an out-of-sample test.
+- **Main measure.** The log score: the negative logarithm of the probability the model gave to the score that occurred, averaged over matches. Lower is better. It is shown together with the "typical probability" it corresponds to (the geometric mean of those probabilities).
+- **Comparisons.** The full model against (a) the same model with independent goals, (b) 1X2 and over/under odds only, (c) 1X2 odds only, with independent goals as the module assumed at the time, and (d) a baseline that ignores the match: the frequencies of scores in all earlier seasons of the same league since 2011/12, with one added to every count.
+- **Uncertainty.** 95% confidence intervals for the differences in log score, from 2,000 bootstrap resamples of matches.
+
+### Results
+
+| Input | Log score | Typical probability of the actual score | Expected scoreline exactly right | Its outcome right | Actual score in top 5 | Predicted goals per match (actual: 2.80) |
+|---|---|---|---|---|---|---|
+| 1X2, over/under and Asian handicap | 2.8815 | 5.61% | 11.7% | 54.1% | 50.8% | 2.79 |
+| 1X2 and over/under | 2.8819 | 5.60% | 11.7% | 54.1% | 50.7% | 2.79 |
+| 1X2 only, independent goals | 2.9081 | 5.46% | 11.2% | 54.1% | 50.0% | 2.49 |
+| Baseline: historical frequencies | 3.0472 | 4.75% | 9.6% | 43.3% | 44.1% | 2.89 |
+
+| Comparison with the first row | Difference in log score | 95% confidence interval | Reading |
+|---|---|---|---|
+| Baseline | +0.1658 | +0.1543 to +0.1771 | The model is clearly better |
+| 1X2 only, independent goals | +0.0267 | +0.0213 to +0.0318 | Leaving out the over/under odds is clearly worse |
+| 1X2 and over/under | +0.0005 | +0.0001 to +0.0009 | Leaving out the Asian handicap is very slightly worse |
+| Independent goals, same odds | +0.0010 | −0.0007 to +0.0026 | No measurable difference |
+
+A positive difference means the first row is better. The effect of the Asian handicap is about fifty times smaller than that of the over/under odds, and its interval only just excludes zero; as one of several comparisons, it is weak evidence.
+
+The advantage over the baseline holds in each league separately, with intervals from +0.13 to +0.20 that all exclude zero.
+
+**Calibration of the full model.** The 49 scorelines from 0-0 to 6-6 of every match are grouped by their predicted probability.
+
+| Predicted probability | Scorelines | Mean predicted | Observed |
+|---|---|---|---|
+| 0% to 2% | 279,257 | 0.34% | 0.32% |
+| 2% to 4% | 36,003 | 2.90% | 2.92% |
+| 4% to 6% | 24,923 | 4.96% | 4.88% |
+| 6% to 8% | 18,641 | 6.97% | 6.81% |
+| 8% to 10% | 17,331 | 9.03% | 9.09% |
+| 10% to 12% | 7,577 | 10.96% | 11.39% |
+| 12% to 15% | 7,161 | 13.30% | 14.22% |
+| above 15% | 519 | 16.05% | 16.18% |
+
+| | Predicted | Observed |
+|---|---|---|
+| Home win | 44.0% | 43.3% |
+| Draw | 24.9% | 25.5% |
+| Away win | 31.1% | 31.2% |
+| Home goals per match | 1.56 | 1.54 |
+| Away goals per match | 1.24 | 1.26 |
+
+The most likely scorelines (above 10%) occurred somewhat more often than predicted. The model is slightly too cautious about them.
+
+### What the results say about the design choices
+
+- **Calibrating $`\rho`$ per match.** It does not measurably improve the scoreline predictions: the difference to independent goals is not distinguishable from zero. What it does is make the outcome probabilities right. With independent goals and the same odds, the model predicts a draw in 23.4% of matches where 25.5% occurred; with calibration it predicts 24.9%. The calibrated value was negative in 92% of matches, with a median of −0.085 and half of all matches between −0.107 and −0.057.
+- **The expected scoreline rule.** Compared with simply taking the most likely score, the rule was exactly right less often (11.7% against 13.3%) but named the right outcome far more often (54.1% against 41.5%). It is the better prediction whenever an exact score is worth less than about nine times a correct outcome, which confirms the reasoning in [section 5](#5-from-the-model-to-the-outputs) on real matches.
+- **The source of the odds.** On the same 7,988 matches, there was no measurable difference between Pinnacle's closing odds and market-average closing odds (difference −0.0007, interval −0.0016 to +0.0002).
+
+### A weakness the test exposed, and its fix
+
+The "1X2 only" row above assumes independent goals ($`\rho = 0`$), which was the module's default for 1X2 odds up to version 0.2.0. It underestimates the number of goals: 2.49 predicted against 2.80 actual. The odds of real matches imply a negative $`\rho`$ (previous section), so independence is wrong on average.
+
+An additional check, run after seeing this, tested a fix. The median $`\rho`$ implied by the odds of the first two seasons (−0.086, from 3,633 matches) was applied to 1X2 odds in the three later seasons (4,355 matches):
+
+| Input, seasons 2023/24 to 2025/26 | Log score | Predicted goals per match (actual: 2.82) |
+|---|---|---|
+| 1X2 only, $`\rho = 0`$ | 2.903 | 2.51 |
+| 1X2 only, $`\rho = -0.086`$ | 2.882 | 2.85 |
+| 1X2 and over/under | 2.876 | 2.81 |
+
+The difference between the first two rows is 0.021 (interval 0.014 to 0.027). The value −0.086 removes the bias in goals and closes most of the gap to using over/under odds; a gap of 0.007 (interval 0.003 to 0.010) remains.
+
+Since version 0.3.0, −0.086 is the default for 1X2 odds alone. Two caveats apply. This check was not part of the original design, so it carries less weight than the results above. And the value was derived from odds of earlier seasons, not from the results it was tested on, but from the same five leagues; whether it suits other competitions is untested.
+
+### What this does not show
+
+- **Other competitions.** Only five top leagues were tested. Cups, lower divisions and international tournaments may behave differently.
+- **The knockout module.** Extra time and shoot-outs are not tested; too few matches reach them, and no data set with odds was available.
+- **A comparison with the market's own correct-score odds**, which would be the hardest benchmark.
+- **Betting value.** The test measures how well probabilities match results, not whether they could be used to bet profitably.
+
+### Reproducing it
+
+```
+python3 validation/backtest.py
+```
+
+The script downloads the season files, runs all comparisons and writes `validation/results.json`. It takes about six minutes on a laptop.
+
+The files are copies of the season files published by football-data.co.uk, taken from a public GitHub repository at a fixed commit. For the Premier League they were compared with a second, independent copy: the scores of all 1,900 matches and all 1,730 available Pinnacle closing 1X2 odds were identical.
+
 ## Methodology
 
 This section gives the statistical reasoning behind each step, the design choices and their alternatives, and the evidence for every assumed value. Author–year citations refer to the [References](#references).
+
+**Prior work.** This module was inspired by Lindstrøm's (2019) blog post "Expected goals from bookmaker odds". The post takes the 1X2 odds of a match, removes the margin with the power method, and searches for the pair of expected goals whose Poisson model reproduces the three outcome probabilities, by least squares. It uses the result to fit team ratings from odds instead of from goals. This module follows the same idea and extends it in four ways:
+
+- it also uses over/under, Asian handicap and both-teams-to-score odds;
+- it models the dependence between the two teams' goals, where the post uses plain Poisson goals;
+- it returns the full score distribution and a single expected scoreline, not only the expected goals;
+- it adds extra time and penalties, and a test against real results.
+
+The post's setup corresponds to the "1X2 only, independent goals" variant in [Validation](#validation), which underestimated goals there; this comparison is with the method as described, not with a run of the post's code.
 
 The pipeline has four steps: (1) take closing odds, (2) remove the bookmaker's margin, (3) calibrate a three-parameter goal model so that it reproduces the resulting probabilities, and (4) read all outputs off the model's joint distribution of the two teams' goals. The knockout module adds a model for extra time and the shoot-out on top.
 
@@ -212,7 +323,7 @@ The pipeline has four steps: (1) take closing odds, (2) remove the bookmaker's m
 
 **Later prices contain more information.** In the point-spread market for professional basketball, Gandar, Dare, Brown and Zuber (1998) showed that the line changes between opening and closing significantly improve the accuracy of the lines as forecasts of game outcomes. This is evidence from another sport; it is the reason for preferring the closing price here, not a soccer-specific result.
 
-**Consequence for the design.** The module does not estimate team strength at all. It treats the closing prices as the best available summary of all match-specific information and only translates them into a full score distribution. Because bookmakers differ in accuracy, the source of the odds matters more than any detail of the model.
+**Consequence for the design.** The module does not estimate team strength at all. It treats the closing prices as the best available summary of all match-specific information and only translates them into a full score distribution. Because bookmakers differ in accuracy, the source of the odds can matter; in this module's own test, though, there was no measurable difference between market-average closing odds and those of a single sharp bookmaker (see [Validation](#validation)).
 
 ### 2. Removing the margin
 
@@ -277,7 +388,7 @@ Three properties of this correction matter for what follows. All three are verif
 
 | Model | Why it was not chosen |
 |---|---|
-| Independent Poisson (Maher, 1982) | It is the special case $`\rho = 0`$ and is used when the odds cannot identify $`\rho`$. On its own it cannot reproduce a draw price that deviates from independence |
+| Independent Poisson (Maher, 1982) | It is the special case $`\rho = 0`$. It cannot reproduce a draw price that deviates from independence, and with 1X2 odds alone it underestimated goals in the backtest |
 | Bivariate Poisson (Karlis and Ntzoufras, 2003) | Its covariance term is non-negative by construction, so it cannot represent negative dependence, which recent data show (below) |
 | Copula models with negative binomial margins (McHale and Scarf, 2011); Sarmanov-family extensions (Michels, Ötting and Karlis, 2025); the Mar-Co model (Petretta et al., 2025) | More flexible and better supported by recent data, but they have more parameters than a single match's odds can identify. They are estimated from thousands of match results, which this module does not use |
 
@@ -289,7 +400,7 @@ Three properties of this correction matter for what follows. All three are verif
 - Petretta et al. (2025) analysed 9,130 matches of the five major European leagues from 2014/15 to 2018/19. They found a Pearson correlation between home and away goals of −0.085 (p < 0.001), and a pattern that differs from the one Dixon and Coles described. Relative to the product of the marginal frequencies, 0-0 occurred 99.5% as often (bootstrap standard error 2.3), 1-1 102.1% (1.7), 1-0 94.5% (1.8) and 0-1 93.0% (2.0), and several higher scores deviated significantly as well. They conclude that the dependence "cannot be simplified to an adjustment of the probabilities of the outcomes 0-0, 1-0, 0-1, 1-1".
 - Estimates of $`\rho`$ differ in sign between data sets. Dixon and Coles (1997) introduced the correction for an excess of low-scoring draws, i.e. $`\rho < 0`$. Winkelmann, Michels and Deutscher (2025) estimate $`\hat\rho = 0.102`$ (standard error 0.096) for the 2024/25 UEFA Champions League and $`\hat\rho = 0.005`$ (0.111) for the Europa League, from 144 matches each; neither differs significantly from zero. Michels et al. (2025) show formally that the correction can move probability in either direction.
 
-The module's answer to this uncertainty is not to assume a value of $`\rho`$ where it can be avoided, as the next section explains.
+The module's answer to this uncertainty is not to assume a value of $`\rho`$ where it can be avoided, and to take it from market prices where it cannot, as the next section explains.
 
 ### 4. Calibration to the odds
 
@@ -310,7 +421,7 @@ With 1X2 and one further informative market there are three probabilities for th
 **Handling of $`\rho`$.** This is the central design choice.
 
 - *When the odds identify it* (an over/under market, a both-teams-to-score market, or an Asian handicap beyond ±0.5 is given), $`\rho`$ is calibrated to the odds, within the admissible range above. No value is assumed. The market's draw price then decides how much probability sits on low-scoring draws.
-- *When they do not* (1X2 only), $`\rho`$ is set to 0, i.e. independent Poisson goals. Given estimates of opposite sign in the literature (previous section), no non-zero value has general support, and 0 is the model of Maher (1982).
+- *When they do not* (1X2 only), $`\rho`$ is set to −0.086. The literature does not supply a value: its estimates differ in sign (previous section). The value is instead the median of what market odds imply in matches where they do identify $`\rho`$: 3,633 matches of the five big European leagues in 2021/22 and 2022/23, with Pinnacle closing odds for 1X2 and over/under 2.5. In the three following seasons it predicted goals without bias, whereas independent goals ($`\rho = 0`$, the model of Maher, 1982) underestimated them by 0.3 per match; see [Validation](#a-weakness-the-test-exposed-and-its-fix).
 
 Calibrating $`\rho`$ match by match is this module's own design choice. The reasoning follows.
 
@@ -336,17 +447,18 @@ This is the same logic as quoting an implied parameter in other markets: the par
 - *Inconsistent prices are reported* through `fit_error`.
 - *The choice can be overridden* by passing `rho=`.
 
-Whether per-match calibration predicts actual scorelines better than a fixed value is an empirical question that only a backtest can answer (section 8).
+The backtest in [Validation](#validation) answers the empirical question: per-match calibration does not make the scoreline predictions measurably better or worse than independent goals, and it brings the predicted share of draws from 23.4% to 24.9%, against 25.5% observed.
 
 **How much the 1X2-only assumption matters.** A great deal, which is why a second market is strongly recommended. For the quick-start match (1.85 / 3.70 / 4.40), the 1X2 odds alone give:
 
 | Assumed $`\rho`$ | Implied expected goals in total |
 |---|---|
-| −0.1 | 2.81 |
-| 0 (default) | 2.42 |
+| −0.15 | 3.01 |
+| −0.086 (default) | 2.76 |
+| 0 | 2.42 |
 | +0.1 | 2.08 |
 
-With the over/under odds added, the total is pinned at 2.82 and $`\rho`$ is calibrated to −0.10 for this (illustrative) set of prices.
+With the over/under odds added, the total is pinned at 2.82 and $`\rho`$ is calibrated to −0.10 for this (illustrative) set of prices. In real matches, half of the calibrated values lay between −0.107 and −0.057, so the default is a typical value, not the right one for every match.
 
 **Bets with refunds and split stakes.** Whole and quarter lines do not have a simple win probability: a whole line refunds the stake when it is hit exactly, and a quarter line splits the stake between the two neighbouring lines. For a bet that wins with stake-weighted probability $`W`$ and loses with $`L`$ (the remainder is refunded), the fair decimal odds $`o`$ solve $`(o - 1)W - L = 0`$, so
 
@@ -427,7 +539,7 @@ The code contains no unexplained numbers. Statistical assumptions are public, na
 
 | Constant | Value | Kind | Basis |
 |---|---|---|---|
-| `DEFAULT_RHO` | 0 | Assumption, used only with 1X2 odds alone | Independent Poisson goals (Maher, 1982); published estimates differ in sign (Dixon and Coles, 1997; Winkelmann et al., 2025; Petretta et al., 2025) |
+| `DEFAULT_RHO` | −0.086 | Assumption, used only with 1X2 odds alone | Median of the values implied by Pinnacle closing odds in 3,633 matches (this module's backtest); published estimates differ in sign and give no usable value (Dixon and Coles, 1997; Winkelmann et al., 2025; Petretta et al., 2025) |
 | `EXTRA_TIME_GOAL_SHARE` | 0.38 | Assumption | 1.02 against 2.69 goals in 12,898 matches (Shelopugin and Sirotkin, 2026) |
 | `SHOOTOUT_HOME_WIN` | 0.5 | Assumption | Kocher et al. (2012); Wunderlich et al. (2020) |
 | Admissible range of $`\rho`$ | formula | Mathematical constraint | Dixon and Coles (1997) |
@@ -440,17 +552,18 @@ The code contains no unexplained numbers. Statistical assumptions are public, na
 
 ### 8. Limitations
 
-- **No validation against results.** The module has not been backtested. Its claim is narrower than "accurate": it produces the score distribution that a Dixon–Coles model implies for the given prices. Whether that distribution is well calibrated against real scorelines, and whether calibrating $`\rho`$ per match beats a fixed value, are empirical questions that need historical closing odds and results.
+- **Validation covers league matches only.** The backtest in [Validation](#validation) covers 7,988 matches of five top European leagues. Other competitions and the knockout module are untested.
+- **The default for 1X2 odds alone is a five-league average.** The value −0.086 comes from the odds of five top European leagues and may not suit other competitions.
 - **The dependence structure is contested.** Recent data do not support the specific low-score pattern of the Dixon–Coles correction (Petretta et al., 2025; McHale and Scarf, 2011). The correction is used here because it is the richest structure that a single match's prices can identify, not because it is the best description of the data.
 - **Per-match $`\rho`$ absorbs noise.** Rounding of the odds and errors of the margin removal flow into the calibrated $`\rho`$ and from there into the probabilities of 0-0, 1-0, 0-1 and 1-1. Section 4 quantifies this for rounding; the effect of the margin removal is not quantified.
-- **1X2 odds alone leave the total open.** See the sensitivity table in section 4.
+- **1X2 odds alone leave the total open.** The default fills the gap with a typical value; see the sensitivity table in section 4.
 - **Margin removal rests on limited comparative evidence**, and is applied to each market separately.
 - **Extra time and shoot-outs are modelled, not priced.** The extra-time value comes from a preprint; the favourite's edge in extra time is probably overstated; the shoot-out default ignores a small effect of team strength.
 - **Equal weighting of markets** when there are more prices than parameters is a simplification.
 
 ### References
 
-Bibliographic details were checked against publisher or index records in November 2026. The findings quoted from Fedrizzi et al., Petretta et al., Shelopugin and Sirotkin, and Winkelmann et al. were taken from the full text of the cited arXiv versions. For the other works they rest on the abstract or, for Dixon and Robinson (1998) and Štrumbelj (2014), on descriptions in later papers; no numerical estimate is quoted from Dixon and Coles (1997), whose full text was not available.
+Bibliographic details were checked against publisher or index records in November 2026. The findings quoted from Fedrizzi et al., Petretta et al., Shelopugin and Sirotkin, and Winkelmann et al. were taken from the full text of the cited arXiv versions, and the description of Lindstrøm's method from the post itself, which is not peer-reviewed. For the other works they rest on the abstract or, for Dixon and Robinson (1998) and Štrumbelj (2014), on descriptions in later papers; no numerical estimate is quoted from Dixon and Coles (1997), whose full text was not available.
 
 - Apesteguia, J., & Palacios-Huerta, I. (2010). Psychological pressure in competitive environments: Evidence from a randomized natural experiment. *American Economic Review*, 100(5), 2548–2564.
 - Cain, M., Law, D., & Peel, D. (2000). The favourite-longshot bias and market efficiency in UK football betting. *Scottish Journal of Political Economy*, 47(1), 25–36. https://doi.org/10.1111/1467-9485.00151
@@ -463,6 +576,7 @@ Bibliographic details were checked against publisher or index records in Novembe
 - Gneiting, T. (2011). Making and evaluating point forecasts. *Journal of the American Statistical Association*, 106(494), 746–762. https://doi.org/10.1198/jasa.2011.r10138
 - Karlis, D., & Ntzoufras, I. (2003). Analysis of sports data by using bivariate Poisson models. *Journal of the Royal Statistical Society: Series D (The Statistician)*, 52(3), 381–393.
 - Kocher, M. G., Lenz, M. V., & Sutter, M. (2012). Psychological pressure in competitive environments: New evidence from randomized natural experiments. *Management Science*, 58(8), 1585–1591. https://doi.org/10.1287/mnsc.1120.1516
+- Lindstrøm, J. C. (2019). Expected goals from bookmaker odds. Blog post, 29 January 2019. https://opisthokonta.net/?p=1760
 - Maher, M. J. (1982). Modelling association football scores. *Statistica Neerlandica*, 36(3), 109–118.
 - McHale, I., & Scarf, P. (2011). Modelling the dependence of goals scored by opposing teams in international soccer matches. *Statistical Modelling*, 11(3), 219–236.
 - Michels, R., Ötting, M., & Karlis, D. (2025). Extending the Dixon and Coles model: an application to women's football data. *Journal of the Royal Statistical Society: Series C (Applied Statistics)*, 74(1), 167–186. https://doi.org/10.1093/jrsssc/qlae050
@@ -482,7 +596,7 @@ Bibliographic details were checked against publisher or index records in Novembe
 python3 -m unittest -v
 ```
 
-The 176 tests in `test_scoreline_predictor.py` and `test_knockout_predictor.py` need no extra packages.
+The 180 tests in `test_scoreline_predictor.py` and `test_knockout_predictor.py` need no extra packages.
 
 ## Licence
 
